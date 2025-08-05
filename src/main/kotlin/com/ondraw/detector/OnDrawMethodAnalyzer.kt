@@ -3,8 +3,8 @@ package com.ondraw.detector
 import org.objectweb.asm.*
 
 /**
- * OnDraw 方法分析器
- * 分析 onDraw 方法内部的指令，检测性能问题
+ * 绘制方法分析器
+ * 分析 onDraw 和 dispatchDraw 方法内部的指令，检测性能问题
  */
 class OnDrawMethodAnalyzer(
     nextVisitor: MethodVisitor?,
@@ -27,10 +27,10 @@ class OnDrawMethodAnalyzer(
             // 检测对象创建
             if (isProblematicObjectCreation(type)) {
                 reportIssue(
-                    OnDrawIssueType.OBJECT_CREATION,
-                    "在 onDraw 中创建对象: $type",
-                    "避免在 onDraw 中创建新对象，考虑对象复用或预创建"
-                )
+                OnDrawIssueType.OBJECT_CREATION,
+                "在 $methodName 中创建对象: $type",
+                "避免在绘制方法中创建新对象，考虑对象复用或预创建"
+            )
             }
         }
         super.visitTypeInsn(opcode, type)
@@ -126,8 +126,8 @@ class OnDrawMethodAnalyzer(
         if (owner == "java/lang/String" && (name == "concat" || name == "valueOf" || name == "format")) {
             reportIssue(
                 OnDrawIssueType.STRING_OPERATION,
-                "在 onDraw 中进行字符串操作: $owner.$name",
-                "避免在 onDraw 中进行字符串拼接，考虑预先准备字符串"
+                "在 $methodName 中进行字符串操作: $owner.$name",
+                "避免在绘制方法中进行字符串拼接，考虑预先准备字符串"
             )
         }
         
@@ -135,8 +135,8 @@ class OnDrawMethodAnalyzer(
         if (owner.startsWith("java/util/") && (name == "add" || name == "remove" || name == "clear" || name == "put")) {
             reportIssue(
                 OnDrawIssueType.COLLECTION_OPERATION,
-                "在 onDraw 中进行集合操作: $owner.$name",
-                "避免在 onDraw 中修改集合，考虑在其他地方预处理数据"
+                "在 $methodName 中进行集合操作: $owner.$name",
+                "避免在绘制方法中修改集合，考虑在其他地方预处理数据"
             )
         }
         
@@ -144,8 +144,8 @@ class OnDrawMethodAnalyzer(
         if (owner.startsWith("java/lang/reflect/")) {
             reportIssue(
                 OnDrawIssueType.REFLECTION,
-                "在 onDraw 中使用反射: $owner.$name",
-                "反射调用性能开销大，避免在 onDraw 中使用"
+                "在 $methodName 中使用反射: $owner.$name",
+                "反射调用性能开销大，避免在绘制方法中使用"
             )
         }
     }
@@ -166,7 +166,7 @@ class OnDrawMethodAnalyzer(
         if (ioClasses.any { owner.startsWith(it) }) {
             reportIssue(
                 OnDrawIssueType.FILE_IO,
-                "在 onDraw 中进行文件 I/O 操作: $owner.$name",
+                "在 $methodName 中进行文件 I/O 操作: $owner.$name",
                 "文件 I/O 操作会阻塞 UI 线程，应该在后台线程中进行"
             )
         }
@@ -188,7 +188,7 @@ class OnDrawMethodAnalyzer(
         if (networkClasses.any { owner.startsWith(it) }) {
             reportIssue(
                 OnDrawIssueType.NETWORK_OPERATION,
-                "在 onDraw 中进行网络操作: $owner.$name",
+                "在 $methodName 中进行网络操作: $owner.$name",
                 "网络操作会严重阻塞 UI 线程，必须在后台线程中进行"
             )
         }
@@ -202,7 +202,7 @@ class OnDrawMethodAnalyzer(
         if (owner.contains("database") || owner.contains("sqlite") || owner.contains("room")) {
             reportIssue(
                 OnDrawIssueType.DATABASE_OPERATION,
-                "在 onDraw 中进行数据库操作: $owner.$name",
+                "在 $methodName 中进行数据库操作: $owner.$name",
                 "数据库操作耗时较长，应该在后台线程中进行"
             )
         }
@@ -211,7 +211,7 @@ class OnDrawMethodAnalyzer(
         if (owner == "android/graphics/BitmapFactory" && name.startsWith("decode")) {
             reportIssue(
                 OnDrawIssueType.BITMAP_DECODE,
-                "在 onDraw 中解码图片: $owner.$name",
+                "在 $methodName 中解码图片: $owner.$name",
                 "图片解码耗时较长，应该预先解码或使用缓存"
             )
         }
@@ -220,7 +220,7 @@ class OnDrawMethodAnalyzer(
         if (owner == "java/lang/Math" && (name == "pow" || name == "sqrt" || name == "sin" || name == "cos")) {
             reportIssue(
                 OnDrawIssueType.COMPLEX_CALCULATION,
-                "在 onDraw 中进行复杂数学计算: $owner.$name",
+                "在 $methodName 中进行复杂数学计算: $owner.$name",
                 "复杂计算应该预先进行或缓存结果"
             )
         }
@@ -250,7 +250,7 @@ class OnDrawMethodAnalyzer(
         if (opcode == Opcodes.GETSTATIC && owner.startsWith("java/lang/System")) {
             reportIssue(
                 OnDrawIssueType.SYSTEM_CALL,
-                "在 onDraw 中访问系统属性: $owner.$name",
+                "在 $methodName 中访问系统属性: $owner.$name",
                 "系统调用可能有性能开销，考虑缓存结果"
             )
         }

@@ -21,6 +21,9 @@ abstract class OnDrawClassVisitorFactory : AsmClassVisitorFactory<OnDrawClassVis
         // 使用线程安全的集合来收集所有检测到的问题
         private val allDetectedIssues = ConcurrentHashMap<String, MutableList<OnDrawIssue>>()
         
+        // 使用线程安全的集合来收集所有类分析结果
+        private val allClassResults = ConcurrentHashMap<String, MutableList<ClassAnalysisResult>>()
+        
         /**
          * 创建 ClassVisitor（用于 Transform API）
          */
@@ -53,16 +56,21 @@ abstract class OnDrawClassVisitorFactory : AsmClassVisitorFactory<OnDrawClassVis
             return OnDrawClassAnalyzer(
                 nextClassVisitor,
                 className,
-                extension
-            ) { issue ->
-                // 收集问题到全局列表中
-                addIssue(variantName, issue)
-                
-                // 如果启用了 verbose，也输出到控制台
-                if (extension.verbose.get()) {
-                    println("[OnDrawClassInterceptor] 发现问题: ${issue.type} 在 ${issue.location}")
+                extension,
+                { issue ->
+                    // 收集问题到全局列表中
+                    addIssue(variantName, issue)
+                    
+                    // 如果启用了 verbose，也输出到控制台
+                    if (extension.verbose.get()) {
+                        println("[OnDrawClassInterceptor] 发现问题: ${issue.type} 在 ${issue.location}")
+                    }
+                },
+                { classResult ->
+                    // 收集类分析结果
+                    addClassResult(variantName, classResult)
                 }
-            }
+            )
         }
         
         /**
@@ -73,6 +81,34 @@ abstract class OnDrawClassVisitorFactory : AsmClassVisitorFactory<OnDrawClassVis
         }
         
         /**
+         * 添加类分析结果（带去重逻辑）
+         */
+        fun addClassResult(variantName: String, classResult: ClassAnalysisResult) {
+            val resultsList = allClassResults.computeIfAbsent(variantName) { mutableListOf() }
+            
+            // 检查是否已经存在相同类名的结果，避免重复添加
+            val existingResult = resultsList.find { it.className == classResult.className }
+            if (existingResult == null) {
+                resultsList.add(classResult)
+            } else {
+                // 如果类已存在，合并问题列表（避免丢失问题）
+                val mergedIssues = (existingResult.issues + classResult.issues).distinctBy { "${it.type}-${it.location}-${it.message}" }
+                val mergedMethods = existingResult.implementedMethods + classResult.implementedMethods
+                
+                // 创建合并后的结果
+                val mergedResult = ClassAnalysisResult(
+                    className = classResult.className,
+                    implementedMethods = mergedMethods,
+                    issues = mergedIssues
+                )
+                
+                // 替换原有结果
+                val index = resultsList.indexOf(existingResult)
+                resultsList[index] = mergedResult
+            }
+        }
+        
+        /**
          * 获取所有检测到的问题
          */
         fun getAllIssues(): Map<String, List<OnDrawIssue>> {
@@ -80,10 +116,18 @@ abstract class OnDrawClassVisitorFactory : AsmClassVisitorFactory<OnDrawClassVis
         }
         
         /**
+         * 获取所有类分析结果
+         */
+        fun getAllClassResults(): Map<String, List<ClassAnalysisResult>> {
+            return allClassResults.mapValues { it.value.toList() }
+        }
+        
+        /**
          * 清空所有问题（用于新的构建）
          */
         fun clearAllIssues() {
             allDetectedIssues.clear()
+            allClassResults.clear()
             reportedVariants.clear()
         }
         
@@ -101,16 +145,10 @@ abstract class OnDrawClassVisitorFactory : AsmClassVisitorFactory<OnDrawClassVis
             reportedVariants.add(variantName)
             
             val issues = allDetectedIssues[variantName] ?: emptyList()
-            
-            if (issues.isEmpty()) {
-                if (extension.verbose.get()) {
-                    println("[OnDrawClassInterceptor] 变体 $variantName: 没有检测到任何问题")
-                }
-                return
-            }
+            val classResults = allClassResults[variantName] ?: emptyList()
             
             if (extension.verbose.get()) {
-                println("[OnDrawClassInterceptor] 变体 $variantName: 检测到 ${issues.size} 个问题，开始生成报告...")
+                println("[OnDrawClassInterceptor] 变体 $variantName: 分析了 ${classResults.size} 个类，检测到 ${issues.size} 个问题，开始生成报告...")
             }
             
             val reportGenerator = OnDrawReportGenerator(extension)
@@ -119,25 +157,55 @@ abstract class OnDrawClassVisitorFactory : AsmClassVisitorFactory<OnDrawClassVis
             if (extension.generateJsonReport.get()) {
                 val reportDir = File(projectDir, extension.reportOutputDir.get())
                 val jsonFile = File(reportDir, "ondraw-report-${variantName}.json")
-                reportGenerator.generateJsonReport(issues, jsonFile)
+                reportGenerator.generateJsonReportFromClassResults(classResults, jsonFile)
             }
             
             // 生成 HTML 报告
             if (extension.generateHtmlReport.get()) {
                 val reportDir = File(projectDir, extension.reportOutputDir.get())
                 val htmlFile = File(reportDir, "ondraw-report-${variantName}.html")
-                reportGenerator.generateHtmlReport(issues, htmlFile)
+                reportGenerator.generateHtmlReportFromClassResults(classResults, htmlFile)
             }
             
             // 控制台报告（总是生成）
-            println("\n=== OnDraw 性能问题报告 (${variantName}) ===")
-            issues.groupBy { it.className }.forEach { (className, classIssues) ->
-                println("\n类: $className")
-                classIssues.forEach { issue ->
-                    println("  - ${issue.type}: ${issue.message} (位置: ${issue.location})")
+            generateConsoleReport(variantName, classResults)
+        }
+        
+        /**
+         * 生成控制台报告
+         */
+        private fun generateConsoleReport(variantName: String, classResults: List<ClassAnalysisResult>) {
+            println("\n=== OnDraw 性能分析报告 (${variantName}) ===")
+            
+            val classesWithIssues = classResults.filter { it.hasIssues }
+            val classesWithoutIssues = classResults.filter { !it.hasIssues }
+            val totalIssues = classResults.sumOf { it.issueCount }
+            
+            println("\n📊 统计信息:")
+            println("  - 分析的类总数: ${classResults.size}")
+            println("  - 有问题的类: ${classesWithIssues.size}")
+            println("  - 无问题的类: ${classesWithoutIssues.size}")
+            println("  - 问题总数: $totalIssues")
+            
+            if (classesWithIssues.isNotEmpty()) {
+                println("\n🚨 发现问题的类:")
+                classesWithIssues.sortedByDescending { it.issueCount }.forEach { classResult ->
+                    println("\n类: ${classResult.className} (${classResult.methodDisplayNames})")
+                    println("  问题数量: ${classResult.issueCount}")
+                    classResult.issues.forEach { issue ->
+                        println("    - ${issue.type}: ${issue.message} (位置: ${issue.location})")
+                    }
                 }
             }
-            println("\n总计: ${issues.size} 个问题")
+            
+            if (classesWithoutIssues.isNotEmpty()) {
+                println("\n✅ 无问题的类:")
+                classesWithoutIssues.forEach { classResult ->
+                    println("  - ${classResult.className} (${classResult.methodDisplayNames})")
+                }
+            }
+            
+            println("\n总计: 分析了 ${classResults.size} 个类，发现 $totalIssues 个问题")
         }
         
         /**
@@ -210,16 +278,21 @@ abstract class OnDrawClassVisitorFactory : AsmClassVisitorFactory<OnDrawClassVis
         return OnDrawClassAnalyzer(
             nextClassVisitor,
             className,
-            extension
-        ) { issue ->
-            // 收集问题到全局列表中
-            addIssue(variantName, issue)
-            
-            // 如果启用了 verbose，也输出到控制台
-            if (extension.verbose.get()) {
-                println("[OnDrawClassInterceptor] 发现问题: ${issue.type} 在 ${issue.location}")
+            extension,
+            { issue ->
+                // 收集问题到全局列表中
+                addIssue(variantName, issue)
+                
+                // 如果启用了 verbose，也输出到控制台
+                if (extension.verbose.get()) {
+                    println("[OnDrawClassInterceptor] 发现问题: ${issue.type} 在 ${issue.location}")
+                }
+            },
+            { classResult ->
+                // 收集类分析结果
+                addClassResult(variantName, classResult)
             }
-        }
+        )
     }
     
     override fun isInstrumentable(classData: ClassData): Boolean {

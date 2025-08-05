@@ -4,17 +4,20 @@ import org.objectweb.asm.*
 
 /**
  * OnDraw 类分析器
- * 使用 ASM 分析类中的 onDraw 方法，检测性能问题
+ * 使用 ASM 分析类中的 onDraw 和 dispatchDraw 方法，检测性能问题
  */
 class OnDrawClassAnalyzer(
     nextVisitor: ClassVisitor,
     private val className: String,
     private val extension: ClassInterceptorExtension,
-    private val onIssueFound: (OnDrawIssue) -> Unit
+    private val onIssueFound: (OnDrawIssue) -> Unit,
+    private val onClassAnalyzed: (ClassAnalysisResult) -> Unit
 ) : ClassVisitor(Opcodes.ASM7, nextVisitor) {
     
     private var isViewClass = false
     private var superClassName: String? = null
+    private val implementedMethods = mutableSetOf<DrawMethodType>()
+    private val foundIssues = mutableListOf<OnDrawIssue>()
     
     override fun visit(
         version: Int,
@@ -46,22 +49,51 @@ class OnDrawClassAnalyzer(
     ): MethodVisitor? {
         val methodVisitor = super.visitMethod(access, name, descriptor, signature, exceptions)
         
-        // 只分析 onDraw 方法
-        if (name == "onDraw" && isViewClass) {
+        // 检测 onDraw 和 dispatchDraw 方法
+        val drawMethodType = when (name) {
+            "onDraw" -> DrawMethodType.ON_DRAW
+            "dispatchDraw" -> DrawMethodType.DISPATCH_DRAW
+            else -> null
+        }
+        
+        if (drawMethodType != null && isViewClass) {
+            // 记录实现的绘制方法
+            implementedMethods.add(drawMethodType)
+            
             if (extension.verbose.get()) {
-                println("[OnDrawClassInterceptor] 发现 onDraw 方法: $className.$name")
+                println("[OnDrawClassInterceptor] 发现 ${drawMethodType.displayName} 方法: $className.$name")
             }
             
             return OnDrawMethodAnalyzer(
                 methodVisitor,
                 className,
                 name,
-                extension,
-                onIssueFound
-            )
+                extension
+            ) { issue ->
+                foundIssues.add(issue)
+                onIssueFound(issue)
+            }
         }
         
         return methodVisitor
+    }
+    
+    override fun visitEnd() {
+        super.visitEnd()
+        
+        // 如果是 View 类且实现了绘制方法，记录分析结果
+        if (isViewClass && implementedMethods.isNotEmpty()) {
+            val result = ClassAnalysisResult(
+                className = className,
+                implementedMethods = implementedMethods.toSet(),
+                issues = foundIssues.toList()
+            )
+            onClassAnalyzed(result)
+            
+            if (extension.verbose.get()) {
+                println("[OnDrawClassInterceptor] 类分析完成: $className, 方法: ${result.methodDisplayNames}, 问题: ${result.issueCount}")
+            }
+        }
     }
     
     /**
